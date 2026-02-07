@@ -1,0 +1,271 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech to Text & Text to Speech</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 50px;
+            background: linear-gradient(to right, #6a11cb, #2575fc);
+            color: white;
+        }
+        .container {
+            background: white;
+            color: black;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.2);
+            width: 50%;
+            margin: auto;
+        }
+        textarea {
+            width: 90%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: 0.3s;
+        }
+        .btn-blue {
+            background: #3498db;
+            color: white;
+        }
+        .btn-blue:hover {
+            background: #2980b9;
+        }
+        .btn-green {
+            background: #2ecc71;
+            color: white;
+        }
+        .btn-green:hover {
+            background: #27ae60;
+        }
+        .btn-red {
+            background: #e74c3c;
+            color: white;
+        }
+        .btn-red:hover {
+            background: #c0392b;
+        }
+        canvas {
+            width: 100%;
+            height: 300px;
+            background: black;
+        }
+    </style>
+</head>
+<body>
+    <h1>Speech to Text & Text to Speech</h1>
+    
+    <div class="container">
+        <h2>Text to Speech</h2>
+        <textarea id="text-input" placeholder="Enter text here..."></textarea>
+        <br>
+        <button class="btn-blue" onclick="convertTextToSpeech()">Convert to Speech</button>
+        <br>
+        <audio id="audio" controls style="display: none;"></audio>
+        <canvas id="ttsLineGraph" width="400" height="200"></canvas>
+        <br>
+        <button class="btn-red" onclick="resetTTS()">Reset</button>
+    </div>
+    
+    <div class="container" style="margin-top: 20px;">
+        <h2>Speech to Text</h2>
+        <button class="btn-green" onclick="toggleRecording()">Record Speech</button>
+        <br>
+        <p id="recognized-text">Recognized Text: </p>
+        <canvas id="sttLineGraph" width="400" height="200"></canvas>
+        <br>
+        <button class="btn-red" onclick="resetSTT()">Reset</button>
+    </div>
+
+    <script>
+        let recognition;
+        let audioCtx;
+        let analyser;
+        let source;
+        let isRecording = false;
+        let sttChart = null;
+
+        function convertTextToSpeech() {
+            let text = document.getElementById("text-input").value;
+            if (text === "") {
+                alert("Please enter some text before converting to speech.");
+                return;
+            }
+            $.post("/tts", {text: text}, function(response) {
+                let audioElement = document.getElementById("audio");
+                audioElement.src = response.audio;
+                audioElement.style.display = "block";
+                audioElement.play();
+                visualizeAudioWithGraph(audioElement, "ttsLineGraph");
+            });
+        }
+
+        function toggleRecording() {
+            if (isRecording) {
+                recognition.stop();
+                stopMicrophone();
+                document.getElementById("recognized-text").innerText = "Recognition stopped.";
+                isRecording = false;
+            } else {
+                startRecording();
+                isRecording = true;
+            }
+        }
+
+        function startRecording() {
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+
+                recognition.onstart = function() {
+                    document.getElementById("recognized-text").innerText = "Listening...";
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    navigator.mediaDevices.getUserMedia({ audio: true })
+                        .then(stream => {
+                            source = audioCtx.createMediaStreamSource(stream);
+                            source.connect(analyser);
+                            analyser.connect(audioCtx.destination);
+                            visualizeFrequency("sttLineGraph", analyser);
+                        })
+                        .catch(err => console.error('Error getting audio stream:', err));
+                };
+
+                recognition.onresult = function(event) {
+                    let interimTranscript = '';
+                    let finalTranscript = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        } else {
+                            interimTranscript += event.results[i][0].transcript;
+                        }
+                    }
+                    document.getElementById("recognized-text").innerText = "Recognized Text: " + finalTranscript + interimTranscript;
+                };
+
+                recognition.onerror = function(event) {
+                    console.error('Speech recognition error:', event.error);
+                    document.getElementById("recognized-text").innerText = "Recognition error.";
+                };
+
+                recognition.onend = function() {
+                    console.log('Speech recognition ended.');
+                    if (analyser) {
+                        analyser.disconnect();
+                    }
+                };
+
+                recognition.start();
+            } else {
+                document.getElementById("recognized-text").innerText = "Speech recognition not supported.";
+            }
+        }
+
+        function stopMicrophone() {
+            if (source) {
+                source.disconnect();
+            }
+            if (audioCtx) {
+                audioCtx.close();
+            }
+        }
+
+        function visualizeFrequency(canvasId, analyser) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext("2d");
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            let frequencyData = [];
+            let labels = [];
+            let counter = 0;
+
+            // Destroy the existing chart if it exists
+            if (sttChart) {
+                sttChart.destroy();
+            }
+
+            // Create a new chart
+            sttChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Frequency Magnitude',
+                        data: frequencyData,
+                        borderColor: 'blue',
+                        fill: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    scales: {
+                        x: { display: true, title: { display: true, text: 'Time' } },
+                        y: { display: true, title: { display: true, text: 'Frequency Value' } }
+                    }
+                }
+            });
+
+            function updateGraph() {
+                analyser.getByteFrequencyData(dataArray);
+                const avgFrequency = dataArray.reduce((sum, val) => sum + val, 0) / dataArray.length;
+                frequencyData.push(avgFrequency);
+                labels.push(counter++);
+
+                if (labels.length > 50) {
+                    labels.shift();
+                    frequencyData.shift();
+                }
+                sttChart.update();
+                requestAnimationFrame(updateGraph);
+            }
+            updateGraph();
+        }
+
+        function visualizeAudioWithGraph(audioElement, graphCanvasId) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 2048;
+            const source = audioCtx.createMediaElementSource(audioElement);
+            source.connect(analyser);
+            analyser.connect(audioCtx.destination);
+
+            visualizeFrequency(graphCanvasId, analyser);
+        }
+
+        function resetTTS() {
+            document.getElementById("text-input").value = '';
+            document.getElementById("audio").style.display = "none";
+            const canvas = document.getElementById("ttsLineGraph");
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function resetSTT() {
+            document.getElementById("recognized-text").innerText = "Recognized Text: ";
+            const canvas = document.getElementById("sttLineGraph");
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            stopMicrophone();
+        }
+    </script>
+</body>
+</html>
